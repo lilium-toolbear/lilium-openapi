@@ -241,11 +241,6 @@ v1 只要求第三方校验 Lilium 发出的请求签名。第三方响应不要
     "id": "msg_123",
     "text": "/demo args",
     "created_at": "2026-05-10T12:00:00Z"
-  },
-  "capabilities": {
-    "effects": ["reply", "send_text", "send_image_url", "noop"],
-    "markdown": true,
-    "streaming": true
   }
 }
 ```
@@ -269,10 +264,22 @@ v1 只要求第三方校验 Lilium 发出的请求签名。第三方响应不要
 | `room.type` | 聊天室类型，可能为空 |
 | `sender.id` | 发送者 Lilium 用户标识 |
 | `message.id` | 触发命令的消息 ID |
-| `capabilities.effects` | 当前协议支持的 effect 类型 |
 
 所有 ID 字段都按字符串处理。第三方不得假设 `sender.id`、`room.id` 或
 `message.id` 是 UUID，也不得截断或大小写折叠。
+
+### 6.1 协议能力
+
+v1 协议能力由 `api_version = "lilium.external-command.v1"` 固定定义，不在每次调用信封中重复携带。
+
+`lilium.external-command.v1` 支持：
+
+- JSON 响应：`application/json`
+- SSE 响应：`text/event-stream`
+- effect 类型：`reply`、`send_text`、`send_image_url`、`noop`
+- `markdown` 字段，默认值为 `true`
+
+如果未来新增 effect 类型或协商能力，应通过新协议版本或单独的版本能力文档定义，不应把静态能力列表放入每次调用请求。
 
 <a id="response-content-type"></a>
 ## 7. 响应 Content-Type
