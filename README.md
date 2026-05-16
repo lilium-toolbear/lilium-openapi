@@ -25,6 +25,7 @@ Lilium 面向第三方开发者的公开接口与接入文档仓库。
 示例第三方接入仓库：
 
 - [lilium-bank-demo](https://github.com/kuma-dzmm/lilium-bank-demo)
+- [lilium-external-command-demo](https://github.com/kuma-dzmm/lilium-external-command-demo)
 
 文档边界：
 
