@@ -18,7 +18,7 @@
 - [11. 错误模型](#errors)
 - [12. 幂等与重试](#idempotency)
 - [13. 安全要求](#security)
-- [14. Stateful WebSocket 模式预告](#stateful-ws)
+- [14. Stateful WebSocket 模式](#stateful-ws)
 - [15. HTTP Callback 预留](#http-callback)
 - [16. 接入清单](#checklist)
 
@@ -35,8 +35,8 @@ Lilium Bot External Command 允许第三方服务为聊天室提供 slash comman
 Lilium Bot 会将命令调用转发到第三方服务。第三方服务返回结构化 `effects`，
 由 Lilium Bot 在聊天室中执行输出。
 
-本规范当前定义 **无状态 HTTP 命令**。  
-Stateful WebSocket 命令属于后续扩展，见 [14. Stateful WebSocket 模式预告](#stateful-ws)。
+本规范当前定义 **无状态 HTTP 命令**，并给出 **Stateful WebSocket 命令**的协议草案。
+Stateful WebSocket 的实现开放时间以 Lilium 后续公告为准。
 
 本规范不定义 Lilium 内部实现、部署结构、数据库表或 Bot 运行时细节。第三方只需要实现本文档描述的 HTTP endpoint、验签、响应格式与错误处理规则。
 
@@ -106,7 +106,8 @@ Lilium 负责：
 | `timeout_ms` | 是 | Lilium 等待第三方响应的超时时间 |
 | `shared_secret` | 是 | Lilium 与第三方共享的 HMAC 密钥字符串 |
 
-v1 当前只开放无状态 HTTP 命令，等价于 `stateless` 模式。第三方不需要在登记材料里选择或提交 `mode`。
+无状态 HTTP 命令等价于 `stateless` 模式。第三方接入无状态命令时不需要在登记材料里选择或提交 `mode`。
+Stateful WebSocket 命令的登记要求见 [14. Stateful WebSocket 模式](#stateful-ws)。
 
 示例登记材料：
 
@@ -543,28 +544,422 @@ SSE 场景下，第三方应保证同一次 invocation 内：
 - 第三方应对自身 endpoint 做限流和监控。
 
 <a id="stateful-ws"></a>
-## 14. Stateful WebSocket 模式预告
+## 14. Stateful WebSocket 模式
 
 Stateful WebSocket 模式用于需要持续监听聊天室消息或 timer 的命令，例如游戏或多轮交互。
 
-该模式当前为规划能力，v1 无状态 HTTP 接入不要求实现。
-
-设计方向：
+该模式的职责边界：
 
 - Lilium Bot 主动连接第三方 WebSocket endpoint。
 - 第三方维护业务权威状态。
-- Lilium 负责聊天室监听、timer、`/stop` 本地释放和 effect 执行。
+- Lilium 负责聊天室监听、timer、`/stop` 本地释放、effect 执行和 ack。
 - 第三方通过 WebSocket 推送 effects。
-- Lilium 对已执行 effect 返回 ack。
 - Bot 重启后通过 `session.resume` 携带最后 ack 的 `sequence` / `effect_id` 恢复。
 
-Stateful WebSocket 将继续使用：
+### 14.1 登记信息
 
-- `api_version: "lilium.external-command.v1"`
-- RFC 9421 风格的握手认证或等价签名认证
-- 与无状态命令相同的 effect schema
+Stateful 命令仍使用第 3 节的命令元数据。外部 endpoint 配置增加 `stateful_ws`
+模式：
 
-正式开放前，会补充单独的 WebSocket frame 规范。
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `mode` | 是 | 固定为 `stateful_ws`，表示该命令使用 Stateful WebSocket |
+| `endpoint` | 是 | 第三方 Stateful WebSocket endpoint |
+| `timeout_ms` | 是 | Lilium 等待握手、start 响应和 stop 通知的超时时间 |
+| `shared_secret` | 是 | Lilium 与第三方共享的 HMAC 密钥字符串 |
+
+示例登记材料：
+
+| 项 | 示例 |
+| --- | --- |
+| `config_id` | `demo_game` |
+| `name` | `/demo_game` |
+| `description` | `外部有状态 Demo 游戏` |
+| `help_text` | `## /demo_game\n\n**用法**\n- /demo_game start` |
+| `group` | `外部命令` |
+| `mode` | `stateful_ws` |
+| `endpoint` | `wss://example.com/api/lilium/external-commands/v1/demo-game/ws` |
+| `timeout_ms` | `30000` |
+| `shared_secret` | `replace-with-a-random-shared-secret` |
+
+生产环境 `endpoint` 必须使用 `wss://`。本地开发可以使用 `ws://localhost`、
+`ws://127.0.0.1` 或 `ws://[::1]`。
+
+### 14.2 WebSocket 握手签名
+
+WebSocket 握手使用 RFC 9421 HTTP Message Signatures。握手没有 request body，
+因此不使用 `Content-Digest`。
+
+```http
+GET /api/lilium/external-commands/v1/demo-game/ws HTTP/1.1
+Host: example.com
+Sec-WebSocket-Protocol: lilium.external-command.v1
+Signature-Input: lilium=("@method" "@authority" "@path" "sec-websocket-protocol");created=1778395200;expires=1778395230;keyid="demo_game";alg="hmac-sha256"
+Signature: lilium=:BASE64_HMAC_SIGNATURE:
+```
+
+规则：
+
+- `keyid` 是命令 `config_id`。
+- HMAC key 是登记的 `shared_secret`。
+- `created` 与 `expires` 必填。
+- 初始有效期为 30 秒。
+- 签名覆盖 `@method`、`@authority`、`@path`、`sec-websocket-protocol`。
+- WebSocket frame 不逐帧签名，依赖已认证的 TLS WebSocket 连接、frame schema 校验和 sequence 校验。
+
+### 14.3 通用 Frame 信封
+
+所有 frame 都是 JSON：
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "session.start",
+  "message_id": "wsmsg_01H...",
+  "local_session_id": "ext_local_01H...",
+  "sent_at": "2026-05-17T12:00:00Z"
+}
+```
+
+字段：
+
+- `api_version`: 固定为 `lilium.external-command.v1`。
+- `type`: frame 类型。
+- `message_id`: 发送方生成的 frame id，用于排障和去重。
+- `local_session_id`: Lilium 生成的本地 session id。
+- `sent_at`: 可选发送时间。
+
+未知 `type` 是协议错误。未知字段默认忽略，除非具体 frame 明确禁止。
+
+### 14.4 Start / Started
+
+用户发送命令后，Lilium 完成本地准入检查，占用本地房间 session slot，
+建立 WebSocket，并发送 `session.start`。如果第三方拒绝或启动失败，Lilium 释放本地 slot。
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "session.start",
+  "message_id": "wsmsg_start_01H",
+  "local_session_id": "ext_local_01H",
+  "invocation": {
+    "invocation_id": "cmd_01H",
+    "sent_at": "2026-05-17T12:00:00Z",
+    "command": {
+      "config_id": "demo_game",
+      "name": "/demo_game",
+      "matched_name": "/demo_game",
+      "args": "start",
+      "argv": ["start"],
+      "raw_text": "/demo_game start",
+      "mode": "stateful_ws"
+    },
+    "room": {
+      "id": "room_123",
+      "type": "group"
+    },
+    "sender": {
+      "id": "user_123"
+    },
+    "message": {
+      "id": "msg_123",
+      "text": "/demo_game start",
+      "created_at": "2026-05-17T12:00:00Z"
+    }
+  }
+}
+```
+
+第三方返回 `session.started`：
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "session.started",
+  "message_id": "wsmsg_started_01H",
+  "local_session_id": "ext_local_01H",
+  "external_session_id": "sess_456",
+  "listen_rules": [
+    {
+      "rule_id": "main",
+      "type": "keyword",
+      "keywords": ["出牌", "跳过"],
+      "consume": true
+    }
+  ],
+  "timers": [
+    {
+      "timer_id": "turn_timeout",
+      "fire_at": "2026-05-17T12:01:00Z"
+    }
+  ],
+  "effects": []
+}
+```
+
+规则：
+
+- `external_session_id` 由第三方生成，并在 resume 中保持稳定。
+- `listen_rules` 和 `timers` 替换当前本地监听规则与 timer。
+- `effects` 使用 [14.7 Effect Frame](#stateful-effect-frame) 中的 delivery 包装格式。
+- 如果启动阶段尚未生成 `external_session_id` 就需要返回 terminal effects，`sequence` 可临时按 `local_session_id` 作用域递增。
+- 业务拒绝使用 `error` frame 或 `session.closed status=rejected`，不要用非结构化文本。
+
+### 14.5 Listen Rules 与 Input
+
+`listen_rules` 告诉 Lilium 哪些聊天室消息需要转发给第三方。规则仅作用于发起命令的聊天室。
+
+v1 支持：
+
+```json
+{
+  "rule_id": "main",
+  "type": "keyword",
+  "keywords": ["出牌", "跳过"],
+  "consume": true
+}
+```
+
+```json
+{
+  "rule_id": "all_messages",
+  "type": "all",
+  "consume": false
+}
+```
+
+字段：
+
+- `rule_id`: 规则 id。
+- `type`: `keyword` 或 `all`。
+- `keywords`: `keyword` 规则必填。
+- `consume`: 为 `true` 时，Lilium 转发后停止更低优先级 listener 处理该消息。
+
+当消息命中规则，Lilium 发送 `session.input`：
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "session.input",
+  "message_id": "wsmsg_input_01H",
+  "local_session_id": "ext_local_01H",
+  "input_id": "input_msg_789",
+  "matched_rule_id": "main",
+  "room": {
+    "id": "room_123",
+    "type": "group"
+  },
+  "sender": {
+    "id": "user_456"
+  },
+  "message": {
+    "id": "msg_789",
+    "text": "出牌 A",
+    "created_at": "2026-05-17T12:00:30Z"
+  }
+}
+```
+
+第三方必须按 `input_id` 做幂等处理。
+
+### 14.6 Timer
+
+Timer 由第三方声明，Lilium 调度。
+
+```json
+{
+  "timer_id": "turn_timeout",
+  "fire_at": "2026-05-17T12:01:00Z"
+}
+```
+
+到期后 Lilium 发送：
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "session.timer",
+  "message_id": "wsmsg_timer_01H",
+  "local_session_id": "ext_local_01H",
+  "timer_id": "turn_timeout",
+  "fired_at": "2026-05-17T12:01:00Z"
+}
+```
+
+Timer 是 best-effort。第三方必须能接受延迟或重复的 timer frame，并按
+`(local_session_id, timer_id, fired_at)` 做幂等处理。
+
+<a id="stateful-effect-frame"></a>
+### 14.7 Effect Frame 与 Ack
+
+第三方通过 `effect` frame 推送输出：
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "effect",
+  "message_id": "wsmsg_effect_01H",
+  "local_session_id": "ext_local_01H",
+  "sequence": 2,
+  "effect_id": "eff_turn_prompt",
+  "effect": {
+    "type": "send_text",
+    "text": "轮到 Alice",
+    "markdown": true
+  }
+}
+```
+
+规则：
+
+- `sequence` 在同一个 `external_session_id` 内严格递增。
+- `effect_id` 在同一个 external session 内稳定唯一。
+- Lilium 按 `sequence` 顺序执行 effect。
+- 重复 `effect_id` 或已 ack 的 `sequence` 会被忽略并重新 ack。
+- 无效 effect 会 ack 为失败，不执行。
+
+Lilium 在 effect 执行后发送 `ack`：
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "ack",
+  "message_id": "wsmsg_ack_01H",
+  "local_session_id": "ext_local_01H",
+  "sequence": 2,
+  "effect_id": "eff_turn_prompt",
+  "status": "executed"
+}
+```
+
+失败 ack：
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "ack",
+  "message_id": "wsmsg_ack_02H",
+  "local_session_id": "ext_local_01H",
+  "sequence": 3,
+  "effect_id": "eff_bad_image",
+  "status": "failed",
+  "error": {
+    "code": "EFFECT_SEND_FAILED",
+    "message": "image send failed"
+  }
+}
+```
+
+`executed` 表示 Lilium 已完成聊天室副作用。`failed` 表示 effect 已识别但执行失败。
+
+### 14.8 Session Update
+
+第三方可用 `session.update` 替换监听规则和 timer。
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "session.update",
+  "message_id": "wsmsg_update_01H",
+  "local_session_id": "ext_local_01H",
+  "listen_rules": [],
+  "timers": []
+}
+```
+
+规则：
+
+- 缺少 `listen_rules` 表示保持当前监听规则。
+- 缺少 `timers` 表示保持当前 timer。
+- 空数组表示清空对应本地状态。
+
+### 14.9 Stop 与 Close
+
+`/stop` 由 Lilium 本地处理。Lilium 会尽力通知第三方，但无论第三方是否可达，
+Lilium 都必须释放本地 listener、timer 和房间 mutex。
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "session.stop",
+  "message_id": "wsmsg_stop_01H",
+  "local_session_id": "ext_local_01H",
+  "reason": "user_stop",
+  "requested_by": {
+    "id": "user_123"
+  }
+}
+```
+
+第三方结束 session 时发送 `session.closed`：
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "session.closed",
+  "message_id": "wsmsg_closed_01H",
+  "local_session_id": "ext_local_01H",
+  "status": "completed",
+  "reason": "finished",
+  "effects": []
+}
+```
+
+`status` 可为：
+
+- `completed`
+- `rejected`
+- `cancelled`
+- `failed`
+
+`effects` 使用 [14.7 Effect Frame](#stateful-effect-frame) 中的 delivery 包装格式。
+
+### 14.10 Resume
+
+Bot 重启或连接断开后，Lilium 对非终态 session 重新连接并发送 `session.resume`。
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "session.resume",
+  "message_id": "wsmsg_resume_01H",
+  "local_session_id": "ext_local_01H",
+  "external_session_id": "sess_456",
+  "last_acked_sequence": 12,
+  "last_effect_id": "eff_12",
+  "room": {
+    "id": "room_123",
+    "type": "group"
+  }
+}
+```
+
+第三方必须重放 `sequence > last_acked_sequence` 的未 ack effects。第三方不能把已 ack
+的副作用换成新的 `effect_id` 重新发送。
+
+如果第三方 session 已不存在，应返回 `session.closed`，不要创建一个语义不同的新 session。
+
+### 14.11 Error Frame
+
+```json
+{
+  "api_version": "lilium.external-command.v1",
+  "type": "error",
+  "message_id": "wsmsg_error_01H",
+  "local_session_id": "ext_local_01H",
+  "code": "REJECTED",
+  "message": "invalid number of players",
+  "user_message": "人数不足，无法开始。",
+  "effects": [],
+  "terminal": true
+}
+```
+
+规则：
+
+- `user_message` 只是诊断字段。聊天室输出仍应通过 `effects`。
+- `terminal: true` 表示 Lilium 在处理 effects 后关闭本地 session。
+- malformed frame、未知 frame 类型、非法 sequence 等属于协议错误，Lilium 可以关闭 session。
 
 <a id="http-callback"></a>
 ## 15. HTTP Callback 预留
@@ -578,7 +973,7 @@ HTTP Callback 不是当前开放能力。
 <a id="checklist"></a>
 ## 16. 接入清单
 
-第三方接入前确认：
+无状态 HTTP 接入前确认：
 
 - 已向 Lilium 提供命令 `config_id`、`name`、说明和 endpoint。
 - endpoint 支持 `POST` JSON 请求。
@@ -590,3 +985,12 @@ HTTP Callback 不是当前开放能力。
 - 返回的 effect 类型属于本文档定义范围。
 - endpoint 超时、重复请求和业务副作用都有幂等保护。
 - 生产环境使用 HTTPS，并妥善保护 `shared_secret`。
+
+Stateful WebSocket 接入还需要确认：
+
+- WebSocket endpoint 使用 `wss://`。
+- 握手请求校验 RFC 9421 `Signature-Input` 与 `Signature`。
+- `session.start`、`session.input`、`session.timer`、`session.stop` 均按 id 做幂等处理。
+- effect 使用稳定递增的 `sequence` 和稳定唯一的 `effect_id`。
+- 收到 `session.resume` 后只重放未 ack effects。
+- `/stop` 对应的 `session.stop` 可重复调用且安全。
