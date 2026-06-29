@@ -21,6 +21,7 @@
 
 - 钱包 API
 - 开放清算 API
+- Chat Bot HTTP API（`https://chat.kuma.homes`）
 - 其他通过 `toolbear_ui` 暴露的对外 HTTP API
 
 本规范只描述错误模型本身。具体接口、字段、状态机与业务语义，仍以各 API
@@ -28,6 +29,7 @@
 
 - [Lilium 钱包 API 接入规范 v1](./lilium-wallet-api-design.md)
 - [Lilium 开放清算 API 接入规范 v1.1](./lilium-open-clearing-api-design.md)
+- [Lilium Chat Bot API 接入规范 v1](./lilium-chat-bot-api-design.md)
 - [Lilium 平台认证与路由规范 v1.1](./lilium-platform-authentication.md)
 
 <a id="envelope"></a>

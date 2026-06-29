@@ -1,6 +1,6 @@
 # Lilium Bot External Command 接入规范 v1
 
-适用对象：接入 Lilium Bot 外部命令能力的第三方开发者  
+适用对象：为 **DZMM Bot** 提供外部 slash command 能力的第三方开发者  
 文档状态：草案
 
 ## 目录
@@ -25,15 +25,15 @@
 <a id="overview"></a>
 ## 1. 文档说明
 
-Lilium Bot External Command 允许第三方服务为聊天室提供 slash command 能力。
-用户在聊天室发送命令，例如：
+Lilium Bot External Command 是 **DZMM Bot**（`dzmm_archive` 中的 `bots/` 子系统）对外暴露的第三方命令集成协议。第三方服务为 **DZMM.ai 聊天室**提供 slash command 能力；用户在房间内发送命令，例如：
 
 ```text
 /demo args
 ```
 
-Lilium Bot 会将命令调用转发到第三方服务。第三方服务返回结构化 `effects`，
-由 Lilium Bot 在聊天室中执行输出。
+DZMM Bot 将命令调用转发到第三方 HTTPS 端点。第三方返回结构化 `effects`，由 DZMM Bot 在房间内执行输出。
+
+**与 ToolBear Chat 无关**：本文档不描述 `chat.kuma.homes`、Chat Bot Token、Bot Gateway WebSocket 或 ToolBear Chat slash command。ToolBear Chat Bot 接入见 [Lilium Chat Bot API 接入规范 v1](./lilium-chat-bot-api-design.md)（另一套独立系统）。
 
 本规范当前定义 **无状态 HTTP 命令**，并给出 **Stateful WebSocket 命令**的协议草案。
 Stateful WebSocket 的实现开放时间以 Lilium 后续公告为准。
@@ -47,7 +47,7 @@ Stateful WebSocket 的实现开放时间以 Lilium 后续公告为准。
 <a id="boundary"></a>
 ## 2. 能力边界
 
-Lilium 负责：
+DZMM Bot 负责：
 
 - 命令注册与展示
 - 房间 ACL、命令开关与 rate limit
@@ -64,16 +64,16 @@ Lilium 负责：
 - 参数解析与业务校验
 - 返回结构化结果
 - 保持自身业务幂等性
-- 校验 Lilium 请求签名
+- 校验 DZMM Bot 请求签名
 - 保护共享密钥
 
 第三方不能：
 
-- 直接访问 Lilium Bot 内部状态
+- 直接访问 DZMM Bot 内部状态
 - 指定任意聊天室发送消息
 - 直接执行管理操作
 - 直接发起钱包、清算或其他平台动作
-- 返回未定义的 effect 类型并期待 Lilium 执行
+- 返回未定义的 effect 类型并期待 DZMM Bot 执行
 
 <a id="registration"></a>
 ## 3. 接入登记信息

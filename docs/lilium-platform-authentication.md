@@ -322,6 +322,10 @@ Authorization: Bearer eyJhbG...
   访问钱包只读 API：`/api/wallet/balance`、`/api/wallet/stats`、`/api/wallet/transactions`、`/api/wallet/wealth_leaderboard`
 - `wallet:transfer`
   访问钱包转账 API：`/api/wallet/transfer`
+- `chat:bots:read`
+  访问 Chat Bot 所有者只读 API：`GET /api/chat/bots*`、`GET /api/chat/commands/directory`（`chat.kuma.homes`，见 [Chat Bot API](./lilium-chat-bot-api-design.md) §3.2）
+- `chat:bots:manage`
+  访问 Chat Bot 所有者写 API：`POST` / `PATCH` / `DELETE /api/chat/bots*`（签发 Chat Bot Token 等）
 
 规则：
 
